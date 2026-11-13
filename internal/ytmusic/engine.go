@@ -94,6 +94,8 @@ type AudioStreamItem struct {
 	FileType    string `json:"file_type"`
 	DownloadURL string `json:"download_url"`
 	Status      string `json:"status"`
+	Direct      bool   `json:"direct,omitempty"`
+	UA          string `json:"-"`
 }
 
 type PlayResult struct {
@@ -107,6 +109,7 @@ type PlayResult struct {
 	Lyrics       string            `json:"lyrics,omitempty"`
 	Streams      []AudioStreamItem `json:"streams,omitempty"`
 	UpNext       []TrackItem       `json:"up_next,omitempty"`
+	MVID         string            `json:"mv_id,omitempty"`
 }
 
 type DownloadResult struct {
@@ -390,7 +393,7 @@ func (y *YTMusicEngine) initDL(ctx context.Context, q url.Values) (gjson.Result,
 	var last error
 	var hedge <-chan time.Time
 	if len(doms) > 1 {
-		hedge = time.After(1 * time.Second)
+		hedge = time.After(700 * time.Millisecond)
 	}
 	for got < len(doms) {
 		select {
@@ -444,6 +447,9 @@ func (y *YTMusicEngine) resolveDLStream(ctx context.Context, targetURL string, f
 
 	initRes, okDom, err := y.initDL(ctx, q)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "api key") {
+			return nil, BadReq("API key converter tidak valid. Ambil key di video-download-api.com/dashboard, isi DL_API_KEY (Railway > Variables), lalu redeploy.")
+		}
 		return nil, fmt.Errorf("dl_service_init_failed: %v", err)
 	}
 
@@ -492,15 +498,19 @@ func (y *YTMusicEngine) PlayMeta(ctx context.Context, videoID string) (*PlayResu
 	if cleanID == "" {
 		return nil, BadReq("invalid_video_id: " + videoID)
 	}
-	nextRes, err := y.postInnerTube(ctx, "next", map[string]any{"videoId": cleanID})
-	if err != nil {
-		return nil, err
+	nextRes, err := y.postInnerTube(ctx, "next", map[string]any{"videoId": cleanID, "playlistId": "RDAMVM" + cleanID, "isAudioOnly": true})
+	if err != nil || !nextRes.Get("contents.singleColumnMusicWatchNextResultsRenderer").Exists() {
+		nextRes, err = y.postInnerTube(ctx, "next", map[string]any{"videoId": cleanID})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tabs := nextRes.Get("contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer.watchNextTabbedResultsRenderer.tabs").Array()
 	var currentQueueItem gjson.Result
 	var upNextList []TrackItem
 	var lyricsBrowseID string
+	var mvID string
 
 	for _, tab := range tabs {
 		tabRenderer := tab.Get("tabRenderer")
@@ -510,9 +520,18 @@ func (y *YTMusicEngine) PlayMeta(ctx context.Context, videoID string) (*PlayResu
 		}
 		queueContents := tabRenderer.Get("content.musicQueueRenderer.content.playlistPanelRenderer.contents").Array()
 		if len(queueContents) > 0 {
-			currentQueueItem = queueContents[0].Get("playlistPanelVideoRenderer")
-			for i := 1; i < len(queueContents) && i <= 15; i++ {
+			first := queueContents[0]
+			currentQueueItem = first.Get("playlistPanelVideoRenderer")
+			if !currentQueueItem.Exists() {
+				currentQueueItem = first.Get("playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer")
+			}
+			counter := first.Get("playlistPanelVideoWrapperRenderer.counterpart.0.counterpartRenderer.playlistPanelVideoRenderer")
+			mvID = pickMV(currentQueueItem, counter)
+			for i := 1; i < len(queueContents) && i <= 40; i++ {
 				qv := queueContents[i].Get("playlistPanelVideoRenderer")
+				if !qv.Exists() {
+					qv = queueContents[i].Get("playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer")
+				}
 				if qv.Exists() {
 					upNextList = append(upNextList, TrackItem{
 						VideoID:    qv.Get("videoId").String(),
@@ -547,8 +566,72 @@ func (y *YTMusicEngine) PlayMeta(ctx context.Context, videoID string) (*PlayResu
 	return &PlayResult{
 		VideoID: cleanID, Title: title, Artist: artist, Album: album, Duration: duration,
 		Thumbnails: thumbnails, CanonicalURL: "https://music.youtube.com/watch?v=" + cleanID,
-		Lyrics: lyricsText, UpNext: upNextList,
+		Lyrics: lyricsText, UpNext: upNextList, MVID: mvID,
 	}, nil
+}
+
+// mvType = jenis video YouTube Music: ATV (audio saja), OMV (klip resmi), UGC, dst.
+func mvType(r gjson.Result) string {
+	return r.Get("navigationEndpoint.watchEndpoint.watchEndpointMusicSupportedConfigs.watchEndpointMusicConfig.musicVideoType").String()
+}
+
+// pickMV memilih video id yang berisi gambar bergerak (klip), bukan sekadar audio + sampul.
+// p = item utama antrean, c = pasangan (counterpart). Kosong bila tidak ada klip.
+func pickMV(p, c gjson.Result) string {
+	for _, r := range []gjson.Result{p, c} {
+		if r.Exists() && mvType(r) != "MUSIC_VIDEO_TYPE_ATV" {
+			if id := r.Get("videoId").String(); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// VideoSearch mencari video (klip, live, dll) di YouTube Music. Dipakai sebagai cadangan
+// kalau lagu tidak punya klip resmi di data "next".
+func (y *YTMusicEngine) VideoSearch(ctx context.Context, query string) ([]TrackItem, error) {
+	res, err := y.postInnerTube(ctx, "search", map[string]any{"query": query, "params": "EgWKAQIQAWoMEA4QChADEAQQCRAF"})
+	if err != nil {
+		return nil, err
+	}
+	var out []TrackItem
+	sections := res.Get("contents.tabbedSearchResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents").Array()
+	for _, sec := range sections {
+		for _, item := range sec.Get("musicShelfRenderer.contents").Array() {
+			r := item.Get("musicResponsiveListItemRenderer")
+			if !r.Exists() {
+				continue
+			}
+			id := r.Get("playlistItemData.videoId").String()
+			if id == "" {
+				id = r.Get("flexColumns.0.musicResponsiveListItemFlexColumnRenderer.text.runs.0.navigationEndpoint.watchEndpoint.videoId").String()
+			}
+			if id == "" {
+				continue
+			}
+			var parts []string
+			for _, rn := range r.Get("flexColumns.1.musicResponsiveListItemFlexColumnRenderer.text.runs").Array() {
+				t := strings.TrimSpace(rn.Get("text").String())
+				if t != "" && t != "•" {
+					parts = append(parts, t)
+				}
+			}
+			artist := ""
+			if len(parts) > 1 {
+				artist = parts[1]
+			}
+			out = append(out, TrackItem{
+				VideoID: id,
+				Title:   r.Get("flexColumns.0.musicResponsiveListItemFlexColumnRenderer.text.runs.0.text").String(),
+				Artist:  artist,
+			})
+			if len(out) >= 6 {
+				return out, nil
+			}
+		}
+	}
+	return out, nil
 }
 
 // Stream = bagian lambat. format: auto (HD, utamakan mp3 320, tunggu MP3 maks 0,6 dtk setelah m4a siap), fast (yang tercepat), mp3, m4a.
@@ -581,22 +664,36 @@ func (y *YTMusicEngine) race(ctx context.Context, target, prefer string) (*Audio
 		s *AudioStreamItem
 		e error
 	}
-	ch := make(chan res, 2)
+	total := 2
+	if prefer == "" {
+		total = 3
+	}
+	ch := make(chan res, 3)
 	for _, f := range []string{"mp3", "m4a"} {
 		go func(f string) {
 			s, e := y.resolveDLStream(c, target, f)
 			ch <- res{s, e}
 		}(f)
 	}
+	if prefer == "" {
+		go func() {
+			s, e := y.directStream(c, target[strings.LastIndex(target, "=")+1:])
+			ch <- res{s, e}
+		}()
+	}
 	var best *AudioStreamItem
-	var last error
+	var last, dErr error
 	var grace <-chan time.Time
-	for n := 0; n < 2; {
+	for n := 0; n < total; {
 		select {
 		case r := <-ch:
 			n++
 			if r.e != nil {
-				last = r.e
+				if strings.HasPrefix(r.e.Error(), "direct_") {
+					dErr = r.e
+				} else {
+					last = r.e
+				}
 				continue
 			}
 			if prefer == "" || r.s.FileType == prefer {
@@ -611,7 +708,10 @@ func (y *YTMusicEngine) race(ctx context.Context, target, prefer string) (*Audio
 	if best != nil {
 		return best, nil
 	}
-	return nil, last
+	if last != nil {
+		return nil, last
+	}
+	return nil, dErr
 }
 
 func (y *YTMusicEngine) Download(ctx context.Context, videoID string, requestedFormat string) (*DownloadResult, error) {
@@ -788,4 +888,114 @@ func (y *YTMusicEngine) extractAlbumID(raw string) string {
 		return "VL" + clean
 	}
 	return clean
+}
+
+// Klien YouTube yang dicoba bersamaan untuk URL audio langsung (tanpa converter).
+type ytClient struct {
+	name, version, id, ua string
+	extra                 map[string]any
+	embed                 bool
+}
+
+var directClients = []ytClient{
+	{name: "ANDROID_VR", version: "1.60.19", id: "28", ua: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+		extra: map[string]any{"deviceMake": "Oculus", "deviceModel": "Quest 3", "androidSdkVersion": 32, "osName": "Android", "osVersion": "12L"}},
+	{name: "ANDROID_VR", version: "1.65.10", id: "28", ua: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+		extra: map[string]any{"deviceMake": "Oculus", "deviceModel": "Quest 3", "androidSdkVersion": 32, "osName": "Android", "osVersion": "12L"}},
+	{name: "IOS", version: "20.10.4", id: "5", ua: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+		extra: map[string]any{"deviceMake": "Apple", "deviceModel": "iPhone16,2", "osName": "iPhone", "osVersion": "18.3.2.22D82"}},
+	{name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", version: "2.0", id: "85", ua: "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15", embed: true},
+}
+
+func (y *YTMusicEngine) directWith(ctx context.Context, videoID string, c ytClient) (*AudioStreamItem, error) {
+	client := map[string]any{"clientName": c.name, "clientVersion": c.version, "hl": "en", "gl": "US"}
+	for k, v := range c.extra {
+		client[k] = v
+	}
+	cx := map[string]any{"client": client}
+	if c.embed {
+		cx["thirdParty"] = map[string]any{"embedUrl": "https://www.youtube.com/"}
+	}
+	b, err := json.Marshal(map[string]any{"videoId": videoID, "contentCheckOk": true, "racyCheckOk": true, "context": cx})
+	if err != nil {
+		return nil, err
+	}
+	dctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dctx, http.MethodPost, "https://www.youtube.com/youtubei/v1/player?prettyPrint=false", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", c.ua)
+	req.Header.Set("X-YouTube-Client-Name", c.id)
+	req.Header.Set("X-YouTube-Client-Version", c.version)
+	resp, err := y.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	res := gjson.ParseBytes(body)
+	if st := res.Get("playabilityStatus.status").String(); st != "OK" {
+		return nil, fmt.Errorf("%s:%s", c.name, st)
+	}
+	pick := func(prefix string) string {
+		var best string
+		var bestBr int64
+		for _, f := range res.Get("streamingData.adaptiveFormats").Array() {
+			if !strings.HasPrefix(f.Get("mimeType").String(), prefix) {
+				continue
+			}
+			u := f.Get("url").String()
+			if u == "" {
+				continue
+			}
+			if br := f.Get("bitrate").Int(); br > bestBr {
+				bestBr = br
+				best = u
+			}
+		}
+		return best
+	}
+	ft := "m4a"
+	best := pick("audio/mp4")
+	if best == "" { // cadangan: webm/opus (Chrome dan Firefox bisa memutar)
+		best = pick("audio/webm")
+		ft = "webm"
+	}
+	if best == "" {
+		return nil, fmt.Errorf("%s:no_audio(url kosong, kemungkinan butuh PO token)", c.name)
+	}
+	return &AudioStreamItem{Format: ft, Quality: "direct", FileType: ft, DownloadURL: best, Status: "Available", Direct: true, UA: c.ua}, nil
+}
+
+// directStream: URL audio langsung dari YouTube, semua klien dicoba bersamaan, yang pertama berhasil dipakai.
+// URL terikat IP server, jadi diputar lewat proxy (Direct=true).
+func (y *YTMusicEngine) directStream(ctx context.Context, videoID string) (*AudioStreamItem, error) {
+	c, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type dres struct {
+		s *AudioStreamItem
+		e error
+	}
+	ch := make(chan dres, len(directClients))
+	for _, cl := range directClients {
+		go func(cl ytClient) {
+			s, e := y.directWith(c, videoID, cl)
+			ch <- dres{s, e}
+		}(cl)
+	}
+	var errs []string
+	for range directClients {
+		x := <-ch
+		if x.e == nil {
+			return x.s, nil
+		}
+		errs = append(errs, x.e.Error())
+	}
+	return nil, fmt.Errorf("direct_unavailable: %s", strings.Join(errs, " | "))
 }

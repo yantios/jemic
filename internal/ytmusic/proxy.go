@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,17 +17,36 @@ var pc = &http.Client{Timeout: 0}
 var ic = &http.Client{Timeout: 15 * time.Second}
 
 // hostPrivat true bila host mengarah ke alamat lokal/privat (mencegah SSRF).
+// Hasil pencarian DNS yang berhasil disimpan 5 menit supaya tiap permintaan audio tidak menunggu DNS lagi.
+type hpEnt struct {
+	v   bool
+	exp time.Time
+}
+
+var hpC sync.Map
+
 func hostPrivat(h string) bool {
-	ips, err := net.LookupIP(h)
-	if err != nil || len(ips) == 0 {
-		return true
+	if v, ok := hpC.Load(h); ok {
+		if e := v.(hpEnt); time.Now().Before(e.exp) {
+			return e.v
+		}
 	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+	ips, err := net.LookupIP(h)
+	if err != nil || len(ips) == 0 { // gangguan DNS sesaat: coba sekali lagi sebelum menolak
+		time.Sleep(150 * time.Millisecond)
+		ips, err = net.LookupIP(h)
+		if err != nil || len(ips) == 0 {
 			return true
 		}
 	}
-	return false
+	res := false
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			res = true
+		}
+	}
+	hpC.Store(h, hpEnt{res, time.Now().Add(5 * time.Minute)})
+	return res
 }
 
 func salin(w http.ResponseWriter, resp *http.Response, u *url.URL) {
@@ -62,8 +82,12 @@ func Proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://loader.to/")
-	req.Header.Set("Origin", "https://loader.to")
+	if strings.HasSuffix(u.Hostname(), "googlevideo.com") {
+		req.Header.Set("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip")
+	} else {
+		req.Header.Set("Referer", "https://loader.to/")
+		req.Header.Set("Origin", "https://loader.to")
+	}
 	rg := r.Header.Get("Range")
 	if rg != "" {
 		req.Header.Set("Range", rg)

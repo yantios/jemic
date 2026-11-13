@@ -56,7 +56,12 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		return e.Search(c, q)
+		result, err := e.Search(c, q)
+		if err != nil {
+			return nil, err
+		}
+		ytmusic.EnrichAppleArtwork(c, q, result)
+		return result, nil
 	})
 	route(mux, "/api/play", 3600, 30*time.Second, func(c context.Context, r *http.Request) (any, error) {
 		id, err := need(r, "id")
@@ -93,6 +98,44 @@ func main() {
 		}
 		return e.Playlist(c, id)
 	})
+	route(mux, "/api/mv", 3600, 25*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		q, err := need(r, "q")
+		if err != nil {
+			return nil, err
+		}
+		return e.VideoSearch(c, q)
+	})
+	route(mux, "/api/global", 1800, 55*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		return e.Global20(c)
+	})
+	route(mux, "/api/viral", 1800, 45*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		return e.Viral20(c)
+	})
+	route(mux, "/api/genreart", 604800, 25*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		g, err := need(r, "g")
+		if err != nil {
+			return nil, err
+		}
+		return ytmusic.GenreArt(c, g)
+	})
+	route(mux, "/api/diag", 0, 40*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		id, err := need(r, "id")
+		if err != nil {
+			return nil, err
+		}
+		return e.Diag(c, id)
+	})
+	route(mux, "/api/home", 900, 55*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		return e.RandomHome(c)
+	})
+	route(mux, "/api/spotify", 3600, 25*time.Second, func(c context.Context, r *http.Request) (any, error) {
+		id, err := need(r, "id")
+		if err != nil {
+			return nil, err
+		}
+		return ytmusic.Spotify(c, r.URL.Query().Get("type"), id)
+	})
+	mux.HandleFunc("/api/audio", e.AudioHandler)
 	mux.HandleFunc("/api/proxy", ytmusic.Proxy)
 	mux.HandleFunc("/api/img", ytmusic.ImgProxy)
 
