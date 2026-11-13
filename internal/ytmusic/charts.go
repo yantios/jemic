@@ -439,18 +439,50 @@ func (y *YTMusicEngine) Global20(ctx context.Context) (*DiscoverResult, error) {
 	return nil, fmt.Errorf("semua chart gagal: %s", strings.Join(errs, "; "))
 }
 
-// Viral20: "Lagi viral" di pencarian, khusus dari Spotify Viral 50 Global.
+// Viral20: "Lagi viral" di pencarian. Utama: Spotify Viral 50 Global. Bila Spotify gagal dibaca / hanya
+// sedikit lagu yang cocok, otomatis pindah ke Viral 50 USA, lalu chart Apple Music (urutan diacak dari
+// peringkat tengah supaya beda dari Global Top 20), lalu YouTube Music. Jadi bagian ini tidak lagi kosong.
 func (y *YTMusicEngine) Viral20(ctx context.Context) (*DiscoverResult, error) {
-	seeds, err := spotifySeeds(ctx, "37i9dQZEVXbLiRSasKsNU9", 20)
-	if err != nil {
-		return nil, fmt.Errorf("Spotify Viral 50 tidak bisa dibaca: %v", err)
+	type srcT struct {
+		name string
+		get  func(context.Context) ([]chartSeed, error)
 	}
-	res := y.resolveSeeds(ctx, seeds, 20)
-	if len(res.Songs) == 0 {
-		return nil, fmt.Errorf("lagu viral Spotify tidak berhasil dipetakan ke audio")
+	srcs := []srcT{
+		{"spotify", func(c context.Context) ([]chartSeed, error) { return spotifySeeds(c, "37i9dQZEVXbLiRSasKsNU9", 20) }},
+		{"spotify", func(c context.Context) ([]chartSeed, error) { return spotifySeeds(c, "37i9dQZEVXbKuaTI1Z1Afx", 20) }},
+		{"apple", func(c context.Context) ([]chartSeed, error) {
+			l, err := appleGlobalSeeds(c, 40)
+			if err != nil {
+				return nil, err
+			}
+			if len(l) > 12 { // lewati papan atas (sudah ada di Global Top 20), ambil yang naik daun
+				l = l[10:]
+			}
+			rand.Shuffle(len(l), func(i, j int) { l[i], l[j] = l[j], l[i] })
+			if len(l) > 20 {
+				l = l[:20]
+			}
+			return l, nil
+		}},
+		{"youtube", func(c context.Context) ([]chartSeed, error) { return y.ytChartSeeds(c, 20) }},
 	}
-	res.Source = "spotify"
-	return res, nil
+	var errs []string
+	for _, s := range srcs {
+		seeds, err := s.get(ctx)
+		if err != nil || len(seeds) < 5 {
+			errs = append(errs, fmt.Sprintf("%s: %v", s.name, err))
+			continue
+		}
+		sc, cancel := context.WithTimeout(ctx, 20*time.Second)
+		res := y.resolveSeeds(sc, seeds, 20)
+		cancel()
+		if len(res.Songs) >= 6 {
+			res.Source = s.name
+			return res, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: hanya %d lagu cocok", s.name, len(res.Songs)))
+	}
+	return nil, fmt.Errorf("lagu viral gagal dimuat: %s", strings.Join(errs, "; "))
 }
 
 // ---------- gambar genre dari Apple Music ----------
