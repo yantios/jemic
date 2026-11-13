@@ -108,7 +108,7 @@ func main() {
 	route(mux, "/api/global", 1800, 55*time.Second, func(c context.Context, r *http.Request) (any, error) {
 		return e.Global20(c)
 	})
-	route(mux, "/api/viral", 1800, 58*time.Second, func(c context.Context, r *http.Request) (any, error) {
+	route(mux, "/api/viral", 1800, 45*time.Second, func(c context.Context, r *http.Request) (any, error) {
 		return e.Viral20(c)
 	})
 	route(mux, "/api/genreart", 604800, 25*time.Second, func(c context.Context, r *http.Request) (any, error) {
@@ -136,7 +136,6 @@ func main() {
 		return ytmusic.Spotify(c, r.URL.Query().Get("type"), id)
 	})
 	mux.HandleFunc("/api/audio", e.AudioHandler)
-	mux.HandleFunc("/api/video", e.VideoHandler)
 	mux.HandleFunc("/api/proxy", ytmusic.Proxy)
 	mux.HandleFunc("/api/img", ytmusic.ImgProxy)
 

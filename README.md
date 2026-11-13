@@ -34,13 +34,6 @@ Buka http://localhost:8080. Port bisa diubah lewat env `PORT`.
 - `/api/stream` bisa lambat (polling converter). UI menampilkan "Menyiapkan audio...".
 - Mengambil audio YouTube lewat converter pihak ketiga melanggar ketentuan YouTube. Pakai untuk proyek pribadi/belajar.
 
-## v3.8
-- Video lagu: tidak lagi memakai embed YouTube (jadi tidak ada judul/logo/tombol YouTube). Server memberi MP4 langsung lewat `/api/video?id=` (Range, seek instan), diputar di elemen `<video>` bisu 16:9 lebar penuh. Audio tetap dari `<audio>` Jemci sebagai jam utama; selisih kecil dikejar dengan mengubah kecepatan putar halus, selisih besar baru di-seek, jadi tidak ada lag/jeda suara. Pil Audio | Video di bawah cover.
-- Lirik: pencocokan ketat ke LRCLIB (judul + artis + durasi, ditolak bila beda jauh), cache lama diganti (`ly2:`). Lirik tersinkron hanya dipakai bila durasi cocok (<=3,5 dtk); selain itu tampil sebagai teks biasa.
-- Lagi viral: Spotify Viral 50 Global, lalu Viral 50 USA, Apple Music, YouTube Music (cadangan otomatis). Tampil sebagai grid 3 kolom.
-- Mini player: geser ke bawah untuk menutup lagu (musik berhenti, mini player hilang).
-- Liquid Glass navbar: lensa saat ditahan memperbesar ikon dan tulisan lewat ukuran layout (bukan scale), sehingga tajam seperti di-zoom.
-
 ## v3.7
 - Cover album per lagu: cover playlist tidak pernah dipakai sebagai cover lagu. Urutan sumber cover: artwork Spotify (bila unik) -> cover album YouTube Music -> Apple Music (iTunes Search). Bila satu gambar dipakai 3 lagu atau lebih, gambar itu dibuang otomatis.
 - Banner dan Global Top 20: sumber dipilih ACAK (di-cache 30 menit) dari Spotify Global Top 50, Apple Music (gabungan chart 8 negara besar), dan YouTube Music Top 100 Songs Global. Bila satu sumber gagal, pindah ke sumber lain. Label banner mengikuti sumber (`source` di `/api/global`).
