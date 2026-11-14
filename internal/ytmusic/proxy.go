@@ -13,7 +13,16 @@ import (
 	"time"
 )
 
-var pc = &http.Client{Timeout: 0}
+var pc = &http.Client{Timeout: 0, Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   16,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   5 * time.Second,
+	ResponseHeaderTimeout: 12 * time.Second,
+}}
 var ic = &http.Client{Timeout: 15 * time.Second}
 
 // hostPrivat true bila host mengarah ke alamat lokal/privat (mencegah SSRF).
@@ -69,7 +78,28 @@ func salin(w http.ResponseWriter, resp *http.Response, u *url.URL) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	// kirim header dan potongan pertama langsung ke browser supaya audio mulai bunyi tanpa menunggu buffer server
+	fl, _ := w.(http.Flusher)
+	if fl != nil {
+		fl.Flush()
+	}
+	buf := make([]byte, 32*1024)
+	first := true
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if first && fl != nil {
+				fl.Flush()
+				first = false
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // Proxy: GET /api/proxy?url=... (http/https, mendukung Range). Batasi domain dengan env PROXY_ALLOW bila perlu.

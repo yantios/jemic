@@ -1,5 +1,5 @@
 // Service Worker sederhana: cache shell aplikasi (hanya respons sukses), API selalu ke jaringan.
-const C='jemci-v13',SHELL=['/','/manifest.json','/logo.png','/icon-192.png'];
+const C='jemci-v14',SHELL=['/','/manifest.json','/logo.png','/icon-192.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>Promise.all(SHELL.map(u=>c.add(u).catch(()=>{})))));self.skipWaiting()});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))));self.clients.claim()});
 self.addEventListener('fetch',e=>{const u=new URL(e.request.url);

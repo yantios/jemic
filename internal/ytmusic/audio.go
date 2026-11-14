@@ -128,7 +128,7 @@ func (y *YTMusicEngine) pickAudio(ctx context.Context, id, mode string) (audioEn
 		go func() {
 			if mode == modeBoth {
 				select {
-				case <-time.After(1200 * time.Millisecond):
+				case <-time.After(450 * time.Millisecond):
 				case <-directFail:
 				case <-c.Done():
 					ch <- res{err: c.Err(), conv: true}
@@ -175,6 +175,21 @@ func (y *YTMusicEngine) getAudio(ctx context.Context, id, mode string) (audioEnt
 	}
 	key := id + "|" + mode
 	audioMu.Lock()
+	// klik putar saat prefetch jalur langsung masih berjalan: ikut menunggu hasilnya, jangan mulai ulang.
+	if mode == modeBoth {
+		if f, ok := audioFl[id+"|"+modeDirect]; ok {
+			audioMu.Unlock()
+			select {
+			case <-f.done:
+				if f.err == nil {
+					return f.ent, nil
+				}
+			case <-ctx.Done():
+				return audioEnt{}, ctx.Err()
+			}
+			return y.getAudio(ctx, id, mode)
+		}
+	}
 	if f, ok := audioFl[key]; ok {
 		audioMu.Unlock()
 		select {
