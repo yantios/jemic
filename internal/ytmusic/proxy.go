@@ -4,7 +4,6 @@ package ytmusic
 // dan hotlink/Referer converter tidak menghalangi.
 
 import (
-	"io"
 	"net"
 	"net/http"
 	"net/url"

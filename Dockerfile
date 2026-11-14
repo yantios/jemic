@@ -4,7 +4,7 @@ WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-mod=mod
 COPY . .
 # go.sum dibuat otomatis saat build, jadi tidak perlu dikirim
-RUN go mod tidy && go build -trimpath -ldflags="-s -w" -o /out/jemci .
+RUN for i in 1 2 3; do go mod download && break; sleep 3; done; go build -trimpath -ldflags="-s -w" -o /out/jemci .
 
 # --- run ---
 FROM alpine:3.20
